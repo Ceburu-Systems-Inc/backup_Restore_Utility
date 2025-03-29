@@ -1,0 +1,22 @@
+directory: C:\Backups\Network
+
+devices:
+  - ip: 192.168.30.201
+    username: admin
+    password: P$$4Cbr1!!
+
+  - ip: 192.168.30.245
+    username: admin
+    password: P$$4Cbr1!!
+  
+  
+  - ip: 192.168.30.201
+    username: admin
+    password: P$$4Cbr1!!
+    restore_file_path: C:\Backups\Network\cisco\192.168.30.201_cisco_20250325_203210.cfg
+  
+  - ip: 192.168.30.245
+    username: admin
+    password: P$$4Cbr1!!
+    restore_file_path: C:\Backups\Network\cisco\192.168.30.245_cisco_20250325_200458.cfg
+  
