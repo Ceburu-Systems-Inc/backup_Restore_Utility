@@ -604,30 +604,70 @@ def perform_huawei_restore(device, config_file):
         # Set the uploaded file as startup configuration
         shell.send(f"startup saved-configuration {config_filename}\n")
         logging.info(f"Setting {config_filename} as startup configuration...")
+        # Wait to receive command prompt or confirmation request
         time.sleep(2)
-        shell.send("Y\n")
-        time.sleep(1)  # Accept default filename
-        output = shell.recv(65535).decode("utf-8")
-        logging.info(f"Received output for startup configuration: {output}")
-        time.sleep(2)
-
-        shell.send("\n")
-        time.sleep(1)
-
+        if shell.recv_ready():
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received after startup config command: {output}")
+            
+            # If prompted for confirmation, send Y
+            if "Y/N" in output or "y/n" in output or "continue" in output:
+                logging.info("Confirmation prompt detected, responding with Y")
+                shell.send("Y\n")
+                time.sleep(2)
+            
+            # Check for success response
+            if shell.recv_ready():
+                confirm_output = shell.recv(65535).decode("utf-8")
+                logging.info(f"Confirmation response: {confirm_output}")
+                if "Y/N" in confirm_output or "y/n" in confirm_output or "continue" in confirm_output:
+                    shell.send("Y\n")
+                    time.sleep(2)
+        else:
+            # Send Y anyway in case we missed the prompt
+            logging.info("No prompt detected, sending Y just in case")
+            shell.send("Y\n")
+            time.sleep(2)
        
         logging.info("Sending reboot command...")
          # Reboot the device
         shell.send("reboot\n")
         time.sleep(1)
-        shell.send("Y\n")
-        output = shell.recv(65535).decode("utf-8")
-        logging.info(f"Received output for reboot command: {output}")
-        logging.info("Confirming reboot...")
-        shell.send("Y\n")
-        time.sleep(1)
-        output = shell.recv(65535).decode("utf-8")
-        logging.info(f"Received output for reboot confirmation: {output}")
-        time.sleep(1)
+        
+        # Wait for the first confirmation prompt
+        start_time = time.time()
+        confirmation_prompt_seen = False
+        timeout = 10  # Wait up to 10 seconds for prompt
+        
+        while time.time() - start_time < timeout and not confirmation_prompt_seen:
+            if shell.recv_ready():
+                output = shell.recv(65535).decode("utf-8")
+                logging.info(f"Received output for reboot command: {output}")
+                
+            # Check if this contains a confirmation prompt
+            if "Y/N" in output or "y/n" in output or "Are you sure" in output or "confirm" in output.lower():
+                confirmation_prompt_seen = True
+                logging.info("Reboot confirmation prompt detected, responding with Y")
+                shell.send("Y\n")
+                time.sleep(1)
+            else:
+                time.sleep(0.5)  # Small delay before checking again
+        
+        # If we never saw a prompt, log it
+        if not confirmation_prompt_seen:
+            logging.warning("No reboot confirmation prompt detected within timeout period")
+        
+        # Wait for any additional confirmation
+        time.sleep(2)
+        if shell.recv_ready():
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output after reboot confirmation: {output}")
+            
+            # Check for a second confirmation prompt
+            if "Y/N" in output or "y/n" in output or "confirm" in output.lower():
+                logging.info("Second reboot confirmation prompt detected, responding with Y")
+                shell.send("Y\n")
+                time.sleep(1)
 
         output = shell.recv(65535).decode("utf-8")
         time.sleep(1)
