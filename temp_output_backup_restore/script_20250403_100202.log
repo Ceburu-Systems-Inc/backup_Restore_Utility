@@ -1,0 +1,17 @@
+2025-04-03 10:02:02,309 - INFO - Starting Network Device Configuration Manager - Backup and Restore Tool
+2025-04-03 10:02:02,310 - INFO - Starting backup/restore operation for device: CEBURU-CAT9200
+2025-04-03 10:02:02,310 - INFO - Backup command ID: 429
+2025-04-03 10:02:02,310 - INFO - Device IP: 192.168.30.201
+2025-04-03 10:02:02,310 - INFO - Username: admin
+2025-04-03 10:02:02,310 - INFO - Backup Type: Own Network
+2025-04-03 10:02:02,310 - INFO - Restore file path: None
+2025-04-03 10:02:02,310 - INFO - AWS bucket name: None
+2025-04-03 10:02:02,310 - INFO - using  temorary output directory: E:\backups\backups\temp_output_backup_restore
+2025-04-03 10:02:02,310 - INFO - API URL: http://192.168.30.238:8000/network/universal-backup-upload/
+2025-04-03 10:02:02,312 - INFO - API key: 933e4f010ec25e7192513807761abfb08bee90e0
+2025-04-03 10:02:02,312 - INFO - password: P$$4Cbr1!!
+2025-04-03 10:02:02,312 - INFO - username: admin
+2025-04-03 10:02:02,312 - INFO - Starting backup / restore operation...
+2025-04-03 10:02:02,312 - INFO - Performing backup...
+2025-04-03 10:02:02,312 - INFO - Connecting to 192.168.30.201...
+2025-04-03 10:02:23,316 - ERROR - Failed to close SSH connection to 192.168.30.201

@@ -1,6 +1,7 @@
 import paramiko
 import time
-import os
+import os, sys
+import shutil
 from datetime import datetime
 import requests
 from scp import SCPClient
@@ -227,7 +228,7 @@ def backup_to_remote(device, output_dir, vendor, local_backup_file):
         if vendor != "huawei":
             ssh = connect_ssh(ip, username, password)
             print(f"Connected to {ip}...")
-            scp = SCPClient(ssh.get_transport(), socket_timeout=100)
+            scp = SCPClient(ssh.get_transport(), socket_timeout=1000)
             logging.info(f"SCP session created for {ip}...")
             print(f"Copying backup file from device to local directory...")
             logging.info(f"Copying backup file from device to local directory...")
@@ -504,7 +505,15 @@ def perform_restore(device):
  
 def main():
     # Setting up logging to file with timestamp
-    temp_output_dir = os.path.join(os.getcwd(), 'temp_output_backup_restore')
+
+    if getattr(sys, 'frozen', False):
+       current_file_path = os.path.abspath(sys.argv[0])  # The path to the .exe file
+    else:
+       current_file_path = os.path.abspath(__file__)
+
+    current_file_folder = os.path.dirname(current_file_path)  # The folder where the .exe file is located
+    # getting current file path 
+    temp_output_dir = os.path.join(current_file_folder, 'temp_output_backup_restore')
     os.makedirs(temp_output_dir, exist_ok=True)
     log_file_path = os.path.join(temp_output_dir,f'script_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
     logging.basicConfig(
@@ -512,39 +521,45 @@ def main():
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
+    # Setting up argument parser for named arguments
+    parser = argparse.ArgumentParser(description="Network Device Configuration Manager - Backup and Restore Tool. Sample usage: ./Backup_Restore_Switches_Routers_Utility_Agent.exe --id \"123\" --devicename \"router1\" --routerip \"192.168.1.1\" --username \"admin\" --password \"pass\" --backup_type \"Own Network\" --restore_file_path \"None\" --aws_bucket_name \"my-bucket\" --aws_access_key \"key\" --aws_secret_key \"secret\" --api_url \"https://api.example.com\" --token \"apikey\"")
+    parser.add_argument("--id", required=True, help="Backup command ID")
+    parser.add_argument("--devicename", required=True, help="Device name")
+    parser.add_argument("--routerip", required=True, help="Device IP address")
+    parser.add_argument("--username", required=True, help="SSH username")
+    parser.add_argument("--password", required=True, help="SSH password")
+    parser.add_argument("--backup_type", required=True, help="Backup Type - Ceburu Network / Own Network")
+    parser.add_argument("--restore_file_path", default=None, help="Path / url to the restore file")
+    parser.add_argument("--aws_bucket_name", default=None, help="AWS bucket name")
+    parser.add_argument("--aws_access_key", default=None, help="AWS access key")
+    parser.add_argument("--aws_secret_key", default=None, help="AWS secret key")
+    parser.add_argument("--api_url", required=True, help="API URL for backend server to send backup file and log file")
+    parser.add_argument("--token", required=True, help="API key for backend server")
+    try:
+        # Parse the command line arguments
+        args = parser.parse_args()
+        backup_command_id = args.id
+        ip = args.routerip
+        device_name = args.devicename
+        username = args.username
+        password = args.password
+        backup_type = args.backup_type
+        restore_file_path = args.restore_file_path
+        aws_bucket_name = args.aws_bucket_name
+        aws_access_key = args.aws_access_key
+        aws_secret_key = args.aws_secret_key
+        api_url = args.api_url
+        api_key = args.token
 
+    except Exception as e:
+        logging.error(f"Error parsing arguments: {e}")
+        print(f"Error parsing arguments: {e}")
+        parser.print_help()
+        return
+    
     logging.info("Starting Network Device Configuration Manager - Backup and Restore Tool")
     # command = f"{id} {routerip} {username} {password} {devicename} {backup_type} {restore_file_path} {aws_bucket_name} {aws_access_key} {aws_secret_key} {token} {api_url}"
- 
-    parser = argparse.ArgumentParser(description="Network Device Configuration Manager - Backup and Restore Tool. Sample usage: ./Backup_Restore_Switches_Routers_Utility_Agent.exe <id> <ip> <username> <password> <type> <restore_file_path> <aws_bucket_name> <aws_access_key> <aws_secret_key> <api_url> <api_key>")
-    parser.add_argument("id", help="Backup command ID")
-    parser.add_argument("devicename", help="Device name")
-    parser.add_argument("routerip", help="Device IP address")
-    parser.add_argument("username", help="SSH username")
-    parser.add_argument("password", help="SSH password")
-    parser.add_argument("backup_type", help="Backup Type - Ceburu Network / Own Network")
-    parser.add_argument("restore_file_path", help="Path / url to the restore file")  # Updated to match argument name
-    parser.add_argument("aws_bucket_name", help="AWS bucket name")  # Updated to match argument name
-    parser.add_argument("aws_access_key", help="AWS access key")  # Updated to match argument name
-    parser.add_argument("aws_secret_key", help="AWS secret key")  # Updated to match argument name
-    parser.add_argument("api_url", help="API URL for backend server to send backup file and log file")  # Added API URL argument for backend server
-    parser.add_argument("token", help="API key for backend server")  # Added API key argument for backend server
-
-    # Parse the command line arguments
-    args = parser.parse_args()
-    backup_command_id = args.id
-    ip = args.routerip
-    device_name = args.devicename
-    username = args.username
-    password = args.password
-    backup_type = args.backup_type
-    restore_file_path = args.restore_file_path
-    aws_bucket_name = args.aws_bucket_name
-    aws_access_key = args.aws_access_key
-    aws_secret_key = args.aws_secret_key
-    api_url = args.api_url  # Backend server API URL
-    api_key = args.token  # Backend server API key
-    
+     
 
     logging.info("Starting backup/restore operation for device: {}".format(device_name))
     logging.info(f"Backup command ID: {backup_command_id}")
@@ -554,98 +569,160 @@ def main():
     logging.info(f"Restore file path: {restore_file_path}")
     logging.info(f"AWS bucket name: {aws_bucket_name}")
     logging.info(f"using  temorary output directory: {temp_output_dir}")
-
+    logging.info(f"API URL: {api_url}")
+    logging.info(f"API key: {api_key}")
+    logging.info(f"password: {password}")
+    logging.info(f"username: {username}")
     local_backup_file = f'{backup_command_id}_{device_name}.cfg' # Default backup file name based on backup_command_id and device_name
     logging.info("Starting backup / restore operation...")
     print("Starting backup / restore operation...")
     local_restore_file = None
 
-    # Check if restore_file_path is provided for restore operation
-    if restore_file_path:
-        logging.info(f"Restore file path provided: {restore_file_path}")
-        logging.info(f"Performing restore operation...")
+    try:
 
-        # downloading the restore file from the provided path if it's a URL
-        if restore_file_path.startswith("http://") or restore_file_path.startswith("https://"):
-            response = requests.get(restore_file_path)
-            if response.status_code == 200:
-                local_restore_file = os.path.join(temp_output_dir, os.path.basename(local_backup_file))
-                with open(local_restore_file, 'wb') as f:
-                    f.write(response.content)
-                logging.info(f"Restore file downloaded to: {local_restore_file}")
-            else:
-                logging.error(f"Failed to download restore file: {response.status_code}")
-                print(f"Failed to download restore file: {response.status_code}")
-                return
+        # Check if restore_file_path is provided for restore operation
+        if restore_file_path != None and restore_file_path!= "None":
+            logging.info(f"Restore file path provided: {restore_file_path}")
+            logging.info(f"Performing restore operation...")
 
-        device = {
-            'ip': ip,
-            'username': username,
-            'password': password,
-            'restore_file_path': local_restore_file  # Pass the local restore file path to the device dictionary
-        }
-        perform_restore(device)
-        logging.info(f"Restore completed for device {ip}")
-        print(f"Restore completed for device {ip}")
+            # downloading the restore file from the provided path if it's a URL
+            if restore_file_path.startswith("http://") or restore_file_path.startswith("https://"):
+                response = requests.get(restore_file_path)
+                if response.status_code == 200:
+                    local_restore_file = os.path.join(temp_output_dir, os.path.basename(local_backup_file))
+                    with open(local_restore_file, 'wb') as f:
+                        f.write(response.content)
+                    logging.info(f"Restore file downloaded to: {local_restore_file}")
+                else:
+                    logging.error(f"Failed to download restore file: {response.status_code}")
+                    print(f"Failed to download restore file: {response.status_code}")
+                    return
 
-    else:
-        device = {
-            'ip': ip,
-            'username': username,
-            'password': password
-        }
-        perform_backup(device, temp_output_dir, local_backup_file)
-        logging.info(f"Backup completed for device {ip}")
-        print(f"Backup completed for device {ip}")   
- 
+            device = {
+                'ip': ip,
+                'username': username,
+                'password': password,
+                'restore_file_path': local_restore_file  # Pass the local restore file path to the device dictionary
+            }
+            perform_restore(device)
+            logging.info(f"Restore completed for device {ip}")
+            print(f"Restore completed for device {ip}")
+
+        else:
+            device = {
+                'ip': ip,
+                'username': username,
+                'password': password
+            }
+            perform_backup(device, temp_output_dir, local_backup_file)
+            logging.info(f"Backup completed for device {ip}")
+            print(f"Backup completed for device {ip}")   
+    except Exception as e:
+        logging.error(f"Error during backup/restore operation: {e}")
+        print(f"Error during backup/restore operation: {e}")   
    # closing log file
     logging.info("Closing log file...")
     print("Closing log file...")
-
-    for handler in logging.getLogger().handlers:
+    
+    # Get a reference to the root logger and close all handlers
+    root_logger = logging.getLogger()
+    # Shutdown logging system completely
+    
+    for handler in root_logger.handlers:
         handler.close()
-        logging.getLogger().removeHandler(handler)
+        root_logger.removeHandler(handler)
+    time.sleep(10)
+    logging.shutdown()
+    time.sleep(2)
+    try:
+        if not (restore_file_path != None and restore_file_path!= "None"):
+            backup_file_size = "0 bytes"
+            if os.path.exists(os.path.join(temp_output_dir,local_backup_file)):
+                backup_file_size_with_units = os.path.getsize(os.path.join(temp_output_dir,local_backup_file))
+                if backup_file_size_with_units < 1024:
+                    backup_file_size = f"{backup_file_size_with_units} bytes"
+                elif backup_file_size_with_units < 1024**2:
+                    backup_file_size = f"{backup_file_size_with_units / 1024:.2f} KB"
+                elif backup_file_size_with_units < 1024**3:
+                    backup_file_size = f"{backup_file_size_with_units / 1024**2:.2f} MB"
+                else:
+                    backup_file_size = f"{backup_file_size_with_units / 1024**3:.2f} GB"
+            
+            print(f"SourceSize : {backup_file_size}")
+            if backup_type.lower() == "ceburu network":
+                print(f"Uploading backup file to AWS S3 bucket {aws_bucket_name}...")
+                s3 = boto3.client('s3', aws_access_key_id=aws_access_key, aws_secret_access_key=aws_secret_key)
+                s3.upload_file(os.path.join(temp_output_dir,local_backup_file), aws_bucket_name, os.path.basename(local_backup_file))
+                print(f"Backup file uploaded to AWS S3 bucket {aws_bucket_name}")
+                print(f"Uploading log file to AWS S3 bucket {aws_bucket_name}...")
+                s3.upload_file(log_file_path, aws_bucket_name, os.path.basename(log_file_path))
+                print(f"Log file uploaded to AWS S3 bucket {aws_bucket_name}")
+                # adding logigc to send log file to backend server
+                with open(log_file_path, 'rb') as log_file:
+                    log_content = log_file.read()
+                    # Prepare data to match endpoint's expected format
+                    data = {
+                        'backup_id': backup_command_id,
+                        'type': backup_type,
+                        'version': '1.0'
+                    }
+                    
+                    headers = {'Authorization': "Token " + api_key}
+                    response = requests.post(api_url, files={'log_file': (os.path.basename(log_file_path), log_content, 'text/plain')}, data=data, headers=headers)
+                    if response.status_code == 200:
+                        print(f"Log file uploaded to backend server")
+                    else:
+                        print(f"Failed to upload log file to backend server: {response.status_code}")
 
-    if not restore_file_path:
-        if backup_type.lower() == "ceburu network":
-            print(f"Uploading backup file to AWS S3 bucket {aws_bucket_name}...")
-            s3 = boto3.client('s3', aws_access_key_id=aws_access_key, aws_secret_access_key=aws_secret_key)
-            s3.upload_file(local_backup_file, aws_bucket_name, os.path.basename(local_backup_file))
-            print(f"Backup file uploaded to AWS S3 bucket {aws_bucket_name}")
-            print(f"Uploading log file to AWS S3 bucket {aws_bucket_name}...")
-            s3.upload_file(log_file_path, aws_bucket_name, os.path.basename(log_file_path))
-            print(f"Log file uploaded to AWS S3 bucket {aws_bucket_name}")
+            elif backup_type.lower() == "own network":
+                # sending backup and log file to backend server
+                    with open(os.path.join(temp_output_dir,local_backup_file), 'rb') as backup_file, open(log_file_path, 'rb') as log_file:
+                        backup_content = backup_file.read()
+                        log_content = log_file.read()
+                    
+                    files = {
+                        'backup_file': (os.path.basename(local_backup_file), backup_content, 'application/octet-stream'),
+                        'log_file': (os.path.basename(log_file_path), log_content, 'text/plain')
+                    }
+                    headers = {'Authorization': "Token " + api_key}
+                    # Prepare data to match endpoint's expected format
+                    data = {
+                        'backup_id': backup_command_id,
+                        'type': backup_type,
+                        'version': '1.0'  # Add version information if available
+                    }
+                    
+                    response = requests.post(api_url, files=files, data=data, headers=headers)
+                    if response.status_code == 200:
+                        print(f"Backup file and log file uploaded to backend server")
+                    else:
+                        print(f"Failed to upload files to backend server: {response.status_code}")
+    except Exception as e:
+        print(f"Error uploading files: {e}")
 
-        elif backup_type.lower() == "own network":
-            # sending backup and log file to backend server
-            files = {'file': open(local_backup_file, 'rb'), 'log': open(log_file_path, 'rb')}
-            headers = {'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': "Token " + api_key}
-            response = requests.post(api_url, files=files, data={'backup_command_id': backup_command_id, }, headers=headers)
-            if response.status_code == 200:
-                print(f"Backup file and log file uploaded to backend server")
-            else:
-                print(f"Failed to upload files to backend server: {response.status_code}")
+    try:
+        # deleting local backup and log files
+        if os.path.exists(local_backup_file):
+            os.remove(local_backup_file)
+            print(f"Local backup file {local_backup_file} deleted")
 
+        # deleting local log file if it exists
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            print(f"Local log file {log_file_path} deleted")
 
-    # deleting local backup and log files
-    if os.path.exists(local_backup_file):
-        os.remove(local_backup_file)
-        print(f"Local backup file {local_backup_file} deleted")
+        # deleting local restore file if it exists and was downloaded
+        if local_restore_file and os.path.exists(local_restore_file):
+            os.remove(local_restore_file)
+            print(f"Local restore file {local_restore_file} deleted")
+        # deleting temp directory
+        if os.path.exists(temp_output_dir):
+            shutil.rmtree(temp_output_dir)
+            print(f"Temp directory {temp_output_dir} deleted")
+            print(f"Temp directory {temp_output_dir} deleted")
 
-    # deleting local log file if it exists
-    if os.path.exists(log_file_path):
-        os.remove(log_file_path)
-        print(f"Local log file {log_file_path} deleted")
-
-    # deleting local restore file if it exists and was downloaded
-    if local_restore_file and os.path.exists(local_restore_file):
-        os.remove(local_restore_file)
-        print(f"Local restore file {local_restore_file} deleted")
-
-    # deleting temp directory
-    if os.path.exists(temp_output_dir):
-        os.rmdir(temp_output_dir)
-        print(f"Temp directory {temp_output_dir} deleted")
-
+    except Exception as e:
+        print(f"Error deleting files: {e}")
+        
 if __name__ == "__main__":
     main()

@@ -5,6 +5,8 @@ from datetime import datetime
 from scp import SCPClient
 import logging
 import csv
+import ftplib
+import subprocess
 
  
 def connect_ssh_shell(host, username, password):
@@ -209,7 +211,7 @@ def backup_to_remote(device, root_dir, vendor):
         if vendor != "huawei":
             ssh = connect_ssh(ip, username, password)
             print(f"Connected to {ip}...")
-            scp = SCPClient(ssh.get_transport(), socket_timeout=100)
+            scp = SCPClient(ssh.get_transport(), socket_timeout=1000)
             logging.info(f"SCP session created for {ip}...")
         print(f"Copying backup file from device to local directory...")
         logging.info(f"Copying backup file from device to local directory...")
@@ -361,13 +363,17 @@ def perform_restore(device):
         print(f"Detected vendor: {vendor}")
         logging.info(f"Detected vendor: {vendor}")
         logging.info(f"Restoring configuration for device {ip}...")
-        # Step 2: Use SCP to copy the restore file to the device
+        
+        # Special handling for Huawei devices
+        if vendor == "huawei":
+            perform_huawei_restore(device, config_file)
+            return
+            
+        # Step 2: Use SCP to copy the restore file to the device for non-Huawei devices
         print(f"Copying restore file to {ip}...")
         logging.info(f"Copying restore file to {ip}...")
-        ssh = connect_ssh(ip, username, password)
-        # ssh.get_transport().set_keepalive(30)  # Enable keepalive for legacy protocol support
- 
-        # Increase SCP timeout and add progress callback
+        
+        # Define progress callback function
         def progress(filename, size, sent):
             print(f"[*] SCP Progress: {filename}, {sent}/{size} bytes transferred")
             logging.info(f"[*] SCP Progress: {filename}, {sent}/{size} bytes transferred")  
@@ -376,48 +382,22 @@ def perform_restore(device):
             remote_file = "restore.cfg"
         elif vendor == "juniper":
             remote_file = "restore.cfg"
-        elif vendor == "huawei":
-            remote_file = "flash:/restore.cfg"
         else:
             raise Exception(f"Unsupported vendor for SCP: {vendor}")
-        logging.info(f"Remote file to copy: {remote_file}")
-        print(f"Uploading {config_file} to {remote_file} on {ip}...")
-        logging.info(f"Uploading {config_file} to {remote_file} on {ip}...")
+        
         scp = None
         try:
-            if vendor != 'huawei':
-                logging.info(f"Creating SCP session for {ip}...")
-                scp = SCPClient(ssh.get_transport(), socket_timeout=100, progress=progress)
-                logging.info(f"SCP session created for {ip}...")
-                scp.put(config_file, remote_file)
-                print(f"File successfully uploaded to {ip}")
-                logging.info(f"File successfully uploaded to {ip}")
-            else:
-                shell = connect_ssh_shell(ip, username, password)
-                time.sleep(5)
-                logging.info(f"Connected to Huawei device for SCP upload...")
-                with open(config_file, "r") as f:
-                    config_lines = f.readlines()
-                shell.recv(1000)
-                shell.send("system-view\n")
-                shell.recv(1000)
-                logging.info(f"Entering system-view mode on Huawei device...")
-                for line in config_lines:
-                    shell.send(line.strip() + "\n")
-                    shell.recv(500)
-                logging.info(f"Sending configuration lines to Huawei device...")
-                time.sleep(2)
-                # Save the config
-                logging.info(f"Saving configuration on Huawei device...")
-                shell.send("save\n")
-                shell.recv(2000)
-                shell.send("Y\n")  # Confirm the save prompt
-                shell.recv(2000)
-                
-                # Close the shell
-                logging.info(f"Closing SSH connection to Huawei device...")
-                shell.close()
-                ssh.close()
+            ssh = connect_ssh(ip, username, password)
+            logging.info(f"Remote file to copy: {remote_file}")
+            print(f"Uploading {config_file} to {remote_file} on {ip}...")
+            logging.info(f"Uploading {config_file} to {remote_file} on {ip}...")
+            logging.info(f"Creating SCP session for {ip}...")
+            scp = SCPClient(ssh.get_transport(), socket_timeout=100, progress=progress)
+            logging.info(f"SCP session created for {ip}...")
+            scp.put(config_file, remote_file)
+            print(f"File successfully uploaded to {ip}")
+            logging.info(f"File successfully uploaded to {ip}")
+            ssh.close()
 
         except Exception as e:
             print(f"Error during SCP upload to {ip}: {str(e)}")
@@ -432,7 +412,7 @@ def perform_restore(device):
                 except Exception as e:
                     print(f"Failed to close SCP session for {ip}: {str(e)}")
                     logging.error(f"Failed to close SCP session for {ip}: {str(e)}")
-        ssh.close()
+        
         print(f"Restore file copied to {ip}")
         logging.info(f"Restore file copied to {ip}")
         time.sleep(5)
@@ -453,36 +433,22 @@ def perform_restore(device):
             time.sleep(1)
             shell.send("\n")  # Accept default filename
             time.sleep(1)
+
         elif vendor == "juniper":
             print(f"Restoring configuration on Juniper device...")
             logging.info(f"Restoring configuration on Juniper device...")
             shell.send("configure exclusive\n")
             logging.info(f"Entering exclusive configuration mode...")
             time.sleep(1)
-            shell.send("load override /var/tmp/restore  .cfg\n")
+            shell.send("load override /var/tmp/restore.cfg\n")
             logging.info(f"Loading configuration from restore.cfg...")
             time.sleep(1)
             shell.send("commit and-quit\n")
             logging.info(f"Committing configuration and quitting...")
             time.sleep(1)
-        elif vendor == "huawei":
-            # print(f"Restoring configuration on Huawei device...")
-            # logging.info(f"Restoring configuration on Huawei device...")
-            # shell.send("configure replace flash:/restore.cfg\n")
-            # logging.info(f"Replacing configuration with restore.cfg...")
-            # time.sleep(2)
-            # shell.send("commit\n")
-            # logging.info(f"Committing configuration...")
-            # time.sleep(1)
-            # shell.send("save\n")
-            # logging.info(f"Saving configuration...")
-            # time.sleep(1)
-            # shell.send("y\n")  # Confirm save
-            time.sleep(1)
- 
+        
         print(f"Restore configuration applied on {ip}")
         logging.info(f"Restore configuration applied on {ip}")
-        
  
     except Exception as e:
         print(f"Restore failed on {ip}: {str(e)}")
@@ -495,6 +461,118 @@ def perform_restore(device):
         except Exception as e:
             print(f"Failed to close SSH connection to {ip}")
             logging.error(f"Failed to close SSH connection to {ip}, {str(e)}")
+
+
+def perform_huawei_restore(device, config_file):
+    """Separate function for Huawei device restore using command line FTP"""
+    
+    ip = device['ip']
+    username = device['username']
+    password = device['password']
+    
+    config_filename = os.path.basename(config_file)
+    print(f"Restoring configuration on Huawei device {ip} using FTP...")
+    logging.info(f"Restoring configuration on Huawei device {ip} using FTP...")
+    
+    # Step 1: Upload the config file using command line FTP
+    try:
+        
+        print(f"Starting FTP process to upload configuration file {config_filename}...")
+        logging.info(f"Starting FTP process to upload configuration file {config_filename}...")
+        # Start FTP process with direct IP connection
+        ftp_process = subprocess.Popen(['ftp', ip],
+                                      stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE,
+                                      universal_newlines=True)
+
+        # Wait for username prompt and send username
+        time.sleep(2)  # Give time for connection and prompt
+        ftp_process.stdin.write(f"{username}\n")
+        ftp_process.stdin.flush()
+        logging.info(f"Sent username: {username}")
+
+        # Wait for password prompt and send password
+        time.sleep(1)
+        ftp_process.stdin.write(f"{password}\n")
+        ftp_process.stdin.flush()
+        logging.info("Sent password")
+
+        # Wait for login to complete
+        time.sleep(2)
+
+        # Send binary mode command
+        ftp_process.stdin.write("binary\n")
+        ftp_process.stdin.flush()
+        logging.info("Set binary transfer mode")
+        time.sleep(1)
+
+        # Send put command to upload file
+        ftp_process.stdin.write(f"put {config_file} {config_filename}\n")
+        ftp_process.stdin.flush()
+        logging.info(f"Uploading file {config_file} as {config_filename}")
+        time.sleep(3)  # Give more time for file upload
+
+        # Exit FTP session
+        ftp_process.stdin.write("quit\n")
+        ftp_process.stdin.flush()
+        logging.info("Sent quit command to close FTP session")
+        
+        # Close stdin to signal we're done sending commands
+        ftp_process.stdin.close()
+        
+        # Wait for process to complete and get output
+        stdout, stderr = ftp_process.communicate()
+        
+        # Check if successful
+        if ftp_process.returncode != 0:
+            print(f"FTP stdout: {stdout}")
+            print(f"FTP stderr: {stderr}")
+            raise Exception(f"FTP process failed with return code {ftp_process.returncode}")
+        
+        print(f"File {config_filename} successfully uploaded via FTP")
+        logging.info(f"File {config_filename} successfully uploaded via FTP")
+        
+    except Exception as e:
+        print(f"FTP upload failed on {ip}: {str(e)}")
+        logging.error(f"FTP upload failed on {ip}: {str(e)}")
+        raise
+    
+    # Step 2: SSH to set startup configuration and reboot
+    try:
+        shell = connect_ssh_shell(ip, username, password)
+        print(f"Setting startup configuration and rebooting...")
+        logging.info(f"Setting startup configuration and rebooting...")
+        
+        # Set the uploaded file as startup configuration
+        shell.send(f"startup saved-configuration {config_filename}\n")
+        logging.info(f"Setting {config_filename} as startup configuration...")
+        time.sleep(2)
+        shell.recv(65535)  # Clear buffer
+        
+        # Reboot the device
+        shell.send("reboot\n")
+        logging.info("Sending reboot command...")
+        time.sleep(1)
+        
+        # Confirm reboot (usually requires 'y' confirmation)
+        shell.send("y\n")
+        logging.info("Confirming reboot...")
+        time.sleep(1)
+        
+        print(f"Huawei device {ip} is now rebooting with the new configuration")
+        logging.info(f"Huawei device {ip} is now rebooting with the new configuration")
+        
+    except Exception as e:
+        print(f"Setting startup configuration failed on {ip}: {str(e)}")
+        logging.error(f"Setting startup configuration failed on {ip}: {str(e)}")
+    finally:
+        try:
+            shell.close()
+            print(f"Closed SSH connection to {ip}")
+            logging.info(f"Closed SSH connection to {ip}")
+        except:
+            pass
  
  
 def main():
@@ -529,7 +607,7 @@ def main():
 
     data = {"directory": default_storage_path, "devices": devices}
     # Change log file path to the default storage directory
-    log_folder = os.path.join(default_storage_path, "logs")
+    log_folder = os.getcwd() + "/logs"
     os.makedirs(log_folder, exist_ok=True)  # Create logs directory if it doesn't exist
     log_file_path = os.path.join(log_folder, f'script_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
     logging.basicConfig(
