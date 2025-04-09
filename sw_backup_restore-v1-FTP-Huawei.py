@@ -36,7 +36,7 @@ def check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y", ):
                 logging.info("Received chunk: " + chunk)
                 
                 # Check for specific confirmation prompts
-                if re.search(r'\[Y/N\]|\(Y/N\)|[Yy]es/[Nn]o|continue\?', chunk):
+                if re.search(r'\[Y/N\]|\(Y/N\)|[Yy]es/[Nn]o|continue\?', chunk) and "configuration will be saved to the configuration file" not in chunk:
                     logging.info("confirmation prompt detected in: " + chunk)
                     
                     # Check if this is the same prompt repeating
@@ -53,7 +53,14 @@ def check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y", ):
                     logging.info("Confirmation prompt detected. Sending: " + prompt_response)
                     shell.send(prompt_response + '\n')
                     time.sleep(0.5)  # Small delay to let the response be processed
-                    
+
+                elif "configuration will be saved to the configuration file" in chunk:
+                    print("Configuration will be saved to the configuration file. Sending:N" )
+                    logging.info("Configuration will be saved to the configuration file. Sending: N")
+                    shell.send("N\n")
+                    time.sleep(0.5)  # Small delay to let the response be processed
+                # Check for other types of prompts that may require confirmation
+                
                 elif re.search(r'Are you sure|Proceed|Confirm', chunk):
                     logging.info("Additional confirmation prompt detected in: " + chunk)
                     
