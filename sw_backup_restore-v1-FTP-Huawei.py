@@ -1,12 +1,6 @@
-import paramiko
-import time
-import os
 from datetime import datetime
 from scp import SCPClient
-import logging
-import csv
-import ftplib
-import subprocess
+import subprocess, re, ftplib, csv, logging, os, time, paramiko
 
  
 def connect_ssh_shell(host, username, password):
@@ -25,6 +19,30 @@ def connect_ssh(host, username, password):
     print(f"SSH connection established to {host}...")
     return ssh
  
+def check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y"):
+    start_time = time.time()
+    output = ""
+    while True:
+        if shell.recv_ready():
+            chunk = shell.recv(65535).decode("utf-8")
+            output += chunk
+            print(chunk, end="")  # For visibility during testing
+
+            # Detect common confirmation prompts
+            if re.search(r'\[Y/N\]|\(Y/N\)|[Yy]es/[Nn]o|continue\?', chunk):
+                logging.info("confirmation prompt detected in: " + chunk)
+                print(chunk, end="")  # For visibility during testing
+                print("Confirmation prompt detected. Sending:", prompt_response)
+                logging.info("Confirmation prompt detected. Sending: " + prompt_response)
+                shell.send(prompt_response + '\n')
+                time.sleep(1)
+
+        if time.time() - start_time > timeout:
+            print("Timeout reached")
+            break
+
+    return output
+
 def detect_vendor(shell):
     # Try detecting the vendor using specific commands
     commands = {
@@ -465,9 +483,7 @@ def perform_restore(device):
             logging.info(f"Received output for configuration mode: {output}")
             
             shell.send("commit\n")
-            logging.info(f"Committing configuration and quitting...")
             # Wait for commit to complete
-            shell.send("commit\n")
             logging.info(f"Committing configuration...")
             time.sleep(3)  # Initial delay
 
@@ -594,9 +610,9 @@ def perform_huawei_restore(device, config_file):
         shell = connect_ssh_shell(ip, username, password)
         print(f"Setting startup configuration and rebooting...")
         logging.info(f"Setting startup configuration and rebooting...")
-        
-        shell.send("N\n")  # Send "N" to bypass password change
-        logging.info("Bypassing password change prompt, sending 'N' to bypass...")
+        logging.info("Bypassing password change prompt, sending 'N' to bypass if any found...")
+        check_and_bypass_confirmation(shell, timeout=5, prompt_response="N")
+
         time.sleep(1)
         output = shell.recv(65535).decode("utf-8")
         logging.info(f"Response after bypassing password prompt: {output}")
@@ -606,72 +622,17 @@ def perform_huawei_restore(device, config_file):
         logging.info(f"Setting {config_filename} as startup configuration...")
         # Wait to receive command prompt or confirmation request
         time.sleep(2)
-        if shell.recv_ready():
-            output = shell.recv(65535).decode("utf-8")
-            logging.info(f"Received after startup config command: {output}")
-            
-            # If prompted for confirmation, send Y
-            if "Y/N" in output or "y/n" in output or "continue" in output:
-                logging.info("Confirmation prompt detected, responding with Y")
-                shell.send("Y\n")
-                time.sleep(2)
-            
-            # Check for success response
-            if shell.recv_ready():
-                confirm_output = shell.recv(65535).decode("utf-8")
-                logging.info(f"Confirmation response: {confirm_output}")
-                if "Y/N" in confirm_output or "y/n" in confirm_output or "continue" in confirm_output:
-                    shell.send("Y\n")
-                    time.sleep(2)
-        else:
-            # Send Y anyway in case we missed the prompt
-            logging.info("No prompt detected, sending Y just in case")
-            shell.send("Y\n")
-            time.sleep(2)
+        output = shell.recv(65535).decode("utf-8")
+        logging.info(f"Response after setting startup configuration: {output}")
+        check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y")
        
         logging.info("Sending reboot command...")
          # Reboot the device
         shell.send("reboot\n")
         time.sleep(1)
-        
-        # Wait for the first confirmation prompt
-        start_time = time.time()
-        confirmation_prompt_seen = False
-        timeout = 10  # Wait up to 10 seconds for prompt
-        
-        while time.time() - start_time < timeout and not confirmation_prompt_seen:
-            if shell.recv_ready():
-                output = shell.recv(65535).decode("utf-8")
-                logging.info(f"Received output for reboot command: {output}")
-                
-            # Check if this contains a confirmation prompt
-            if "Y/N" in output or "y/n" in output or "Are you sure" in output or "confirm" in output.lower():
-                confirmation_prompt_seen = True
-                logging.info("Reboot confirmation prompt detected, responding with Y")
-                shell.send("Y\n")
-                time.sleep(1)
-            else:
-                time.sleep(0.5)  # Small delay before checking again
-        
-        # If we never saw a prompt, log it
-        if not confirmation_prompt_seen:
-            logging.warning("No reboot confirmation prompt detected within timeout period")
-        
-        # Wait for any additional confirmation
-        time.sleep(2)
-        if shell.recv_ready():
-            output = shell.recv(65535).decode("utf-8")
-            logging.info(f"Received output after reboot confirmation: {output}")
-            
-            # Check for a second confirmation prompt
-            if "Y/N" in output or "y/n" in output or "confirm" in output.lower():
-                logging.info("Second reboot confirmation prompt detected, responding with Y")
-                shell.send("Y\n")
-                time.sleep(1)
-
-        output = shell.recv(65535).decode("utf-8")
-        time.sleep(1)
-        
+        check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y")
+        logging.info("Reboot command sent, waiting for confirmation...")
+       
         print(f"Huawei device {ip} is now rebooting with the new configuration")
         logging.info(f"Huawei device {ip} is now rebooting with the new configuration")
         
