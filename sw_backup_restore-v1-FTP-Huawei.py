@@ -19,29 +19,68 @@ def connect_ssh(host, username, password):
     print(f"SSH connection established to {host}...")
     return ssh
  
-def check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y"):
+def check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y", ):
+    timeout = timeout
     start_time = time.time()
     output = ""
-    while True:
-        if shell.recv_ready():
-            chunk = shell.recv(65535).decode("utf-8")
-            output += chunk
-            print(chunk, end="")  # For visibility during testing
-
-            # Detect common confirmation prompts
-            if re.search(r'\[Y/N\]|\(Y/N\)|[Yy]es/[Nn]o|continue\?', chunk):
-                logging.info("confirmation prompt detected in: " + chunk)
+    try:
+        prompt_counter = 0
+        last_prompt = ""
+        max_prompts = 3  # Maximum number of times to respond to similar prompts
+        
+        while (time.time() - start_time) < timeout:
+            if shell.recv_ready():
+                chunk = shell.recv(65535).decode("utf-8")
+                output += chunk
                 print(chunk, end="")  # For visibility during testing
-                print("Confirmation prompt detected. Sending:", prompt_response)
-                logging.info("Confirmation prompt detected. Sending: " + prompt_response)
-                shell.send(prompt_response + '\n')
-                time.sleep(1)
-
-        if time.time() - start_time > timeout:
-            print("Timeout reached")
-            break
-
+                logging.info("Received chunk: " + chunk)
+                
+                # Check for specific confirmation prompts
+                if re.search(r'\[Y/N\]|\(Y/N\)|[Yy]es/[Nn]o|continue\?', chunk):
+                    logging.info("confirmation prompt detected in: " + chunk)
+                    
+                    # Check if this is the same prompt repeating
+                    if chunk.strip() == last_prompt.strip():
+                        prompt_counter += 1
+                        if prompt_counter >= max_prompts:
+                            logging.warning("Detected possible infinite prompt loop, breaking out")
+                            break
+                    else:
+                        prompt_counter = 0
+                        last_prompt = chunk
+                        
+                    print("Confirmation prompt detected. Sending:", prompt_response)
+                    logging.info("Confirmation prompt detected. Sending: " + prompt_response)
+                    shell.send(prompt_response + '\n')
+                    time.sleep(0.5)  # Small delay to let the response be processed
+                    
+                elif re.search(r'Are you sure|Proceed|Confirm', chunk):
+                    logging.info("Additional confirmation prompt detected in: " + chunk)
+                    
+                    # Check if this is the same prompt repeating
+                    if chunk.strip() == last_prompt.strip():
+                        prompt_counter += 1
+                        if prompt_counter >= max_prompts:
+                            logging.warning("Detected possible infinite prompt loop, breaking out")
+                            break
+                    else:
+                        prompt_counter = 0
+                        last_prompt = chunk
+                        
+                    print("Additional confirmation prompt detected. Sending:", prompt_response)
+                    logging.info("Additional confirmation prompt detected. Sending: " + prompt_response)
+                    shell.send(prompt_response + '\n')
+                    time.sleep(0.5)
+            
+            # Small delay to prevent CPU spinning
+            time.sleep(0.1)
+            
+    except Exception as e:
+        logging.error(f"Error in check_and_bypass_confirmation: {str(e)}")
+        print(f"Error in confirmation handling: {str(e)}")
+    
     return output
+        
 
 def detect_vendor(shell):
     # Try detecting the vendor using specific commands
@@ -611,8 +650,11 @@ def perform_huawei_restore(device, config_file):
         print(f"Setting startup configuration and rebooting...")
         logging.info(f"Setting startup configuration and rebooting...")
         logging.info("Bypassing password change prompt, sending 'N' to bypass if any found...")
-        check_and_bypass_confirmation(shell, timeout=5, prompt_response="N")
-
+        
+        time.sleep(1)
+        # check_and_bypass_confirmation(shell, timeout=5, prompt_response="N")
+        shell.send("N\n")
+        
         time.sleep(1)
         output = shell.recv(65535).decode("utf-8")
         logging.info(f"Response after bypassing password prompt: {output}")
@@ -649,7 +691,7 @@ def perform_huawei_restore(device, config_file):
  
  
 def main():
-    version = "1.0.0"
+    version = "4.0.0"
     print(f"SW Backup and Restore Script Version: {version}")
     # Load CSV file and parse data
     with open("devices.csv", "r") as f:
