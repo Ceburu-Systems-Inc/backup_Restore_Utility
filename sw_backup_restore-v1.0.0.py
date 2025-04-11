@@ -25,6 +25,75 @@ def connect_ssh(host, username, password):
     print(f"SSH connection established to {host}...")
     return ssh
  
+def check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y", ):
+    timeout = timeout
+    start_time = time.time()
+    output = ""
+    try:
+        prompt_counter = 0
+        last_prompt = ""
+        max_prompts = 3  # Maximum number of times to respond to similar prompts
+        
+        while (time.time() - start_time) < timeout:
+            if shell.recv_ready():
+                chunk = shell.recv(65535).decode("utf-8")
+                output += chunk
+                print(chunk, end="")  # For visibility during testing
+                logging.info("Received chunk: " + chunk)
+                
+                # Check for specific confirmation prompts
+                if re.search(r'\[Y/N\]|\(Y/N\)|[Yy]es/[Nn]o|continue\?', chunk) and "configuration will be saved to the configuration file" not in chunk:
+                    logging.info("confirmation prompt detected in: " + chunk)
+                    
+                    # Check if this is the same prompt repeating
+                    if chunk.strip() == last_prompt.strip():
+                        prompt_counter += 1
+                        if prompt_counter >= max_prompts:
+                            logging.warning("Detected possible infinite prompt loop, breaking out")
+                            break
+                    else:
+                        prompt_counter = 0
+                        last_prompt = chunk
+                        
+                    print("Confirmation prompt detected. Sending:", prompt_response)
+                    logging.info("Confirmation prompt detected. Sending: " + prompt_response)
+                    shell.send(prompt_response + '\n')
+                    time.sleep(0.5)  # Small delay to let the response be processed
+
+                elif "configuration will be saved to the configuration file" in chunk:
+                    print("Configuration will be saved to the configuration file. Sending:N" )
+                    logging.info("Configuration will be saved to the configuration file. Sending: N")
+                    shell.send("N\n")
+                    time.sleep(0.5)  # Small delay to let the response be processed
+                # Check for other types of prompts that may require confirmation
+                
+                elif re.search(r'Are you sure|Proceed|Confirm', chunk):
+                    logging.info("Additional confirmation prompt detected in: " + chunk)
+                    
+                    # Check if this is the same prompt repeating
+                    if chunk.strip() == last_prompt.strip():
+                        prompt_counter += 1
+                        if prompt_counter >= max_prompts:
+                            logging.warning("Detected possible infinite prompt loop, breaking out")
+                            break
+                    else:
+                        prompt_counter = 0
+                        last_prompt = chunk
+                        
+                    print("Additional confirmation prompt detected. Sending:", prompt_response)
+                    logging.info("Additional confirmation prompt detected. Sending: " + prompt_response)
+                    shell.send(prompt_response + '\n')
+                    time.sleep(0.5)
+            
+            # Small delay to prevent CPU spinning
+            time.sleep(0.1)
+            
+    except Exception as e:
+        logging.error(f"Error in check_and_bypass_confirmation: {str(e)}")
+        print(f"Error in confirmation handling: {str(e)}")
+    
+    return output
+
 def detect_vendor(shell):
     # Try detecting the vendor using specific commands
     commands = {
@@ -357,12 +426,24 @@ def perform_restore(device):
         print(f"Connecting to {ip} to detect vendor...")
         logging.info(f"Connecting to {ip} to detect vendor...")
         shell = connect_ssh_shell(ip, username, password)
+        logging.info(f"Connected to {ip}...")
+        time.sleep(1)
+        shell.recv(1000)
+        shell.send("terminal length 0\n")
+        logging.info(f"Setting terminal length to 0...")
+        shell.send("screen-length 0 temporary\n")
+        logging.info(f"Setting screen length to 0 temporary...")
+        shell.send("set cli screen-length 0\n")
+        logging.info(f"Setting CLI screen length to 0...")
+        time.sleep(1)
+        shell.recv(1000)
         vendor = detect_vendor(shell)
         shell.close()
         time.sleep(5)
         print(f"Detected vendor: {vendor}")
         logging.info(f"Detected vendor: {vendor}")
         logging.info(f"Restoring configuration for device {ip}...")
+        
         
         # Special handling for Huawei devices
         if vendor == "huawei":
@@ -381,7 +462,7 @@ def perform_restore(device):
         if vendor == "cisco":
             remote_file = "restore.cfg"
         elif vendor == "juniper":
-            remote_file = "restore.cfg"
+            remote_file = "/var/tmp/restore.cfg"
         else:
             raise Exception(f"Unsupported vendor for SCP: {vendor}")
         
@@ -437,15 +518,54 @@ def perform_restore(device):
         elif vendor == "juniper":
             print(f"Restoring configuration on Juniper device...")
             logging.info(f"Restoring configuration on Juniper device...")
-            shell.send("configure exclusive\n")
+            shell.send("configure\n")
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output for configuration mode: {output}")
+            
             logging.info(f"Entering exclusive configuration mode...")
-            time.sleep(1)
+            time.sleep(3)
             shell.send("load override /var/tmp/restore.cfg\n")
+
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output for configuration mode: {output}")
             logging.info(f"Loading configuration from restore.cfg...")
-            time.sleep(1)
-            shell.send("commit and-quit\n")
-            logging.info(f"Committing configuration and quitting...")
-            time.sleep(1)
+            time.sleep(6)
+
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output for configuration mode: {output}")
+            
+            shell.send("commit\n")
+            # Wait for commit to complete
+            logging.info(f"Committing configuration...")
+            time.sleep(3)  # Initial delay
+
+            # Wait for commit response
+            start_time = time.time()
+            timeout = 60
+            commit_complete = False
+
+            while time.time() - start_time < timeout and not commit_complete:
+                if shell.recv_ready():
+                    output = shell.recv(65535).decode("utf-8")
+                    logging.info(f"Commit output: {output}")
+                    
+                    # Check for completion indicators
+                    if "commit complete" in output.lower() or "configuration committed" in output.lower():
+                        commit_complete = True
+                        logging.info("Commit completed successfully")
+                    elif "error" in output.lower() or "failed" in output.lower():
+                        logging.error(f"Commit error: {output}")
+                        raise Exception(f"Configuration commit failed: {output}")
+                time.sleep(1)
+
+            if not commit_complete:
+                logging.warning("Commit operation timed out")
+            
+            
+            shell.send("exit\n")
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output for exiting configuration mode: {output}")
+            time.sleep(2)
         
         print(f"Restore configuration applied on {ip}")
         logging.info(f"Restore configuration applied on {ip}")
@@ -543,23 +663,32 @@ def perform_huawei_restore(device, config_file):
         shell = connect_ssh_shell(ip, username, password)
         print(f"Setting startup configuration and rebooting...")
         logging.info(f"Setting startup configuration and rebooting...")
+        logging.info("Bypassing password change prompt, sending 'N' to bypass if any found...")
+        
+        time.sleep(1)
+        # check_and_bypass_confirmation(shell, timeout=5, prompt_response="N")
+        shell.send("N\n")
+        
+        time.sleep(1)
+        output = shell.recv(65535).decode("utf-8")
+        logging.info(f"Response after bypassing password prompt: {output}")
         
         # Set the uploaded file as startup configuration
         shell.send(f"startup saved-configuration {config_filename}\n")
         logging.info(f"Setting {config_filename} as startup configuration...")
+        # Wait to receive command prompt or confirmation request
         time.sleep(2)
-        shell.recv(65535)  # Clear buffer
-        
-        # Reboot the device
-        shell.send("reboot\n")
+        output = shell.recv(65535).decode("utf-8")
+        logging.info(f"Response after setting startup configuration: {output}")
+        check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y")
+       
         logging.info("Sending reboot command...")
+         # Reboot the device
+        shell.send("reboot\n")
         time.sleep(1)
-        
-        # Confirm reboot (usually requires 'y' confirmation)
-        shell.send("y\n")
-        logging.info("Confirming reboot...")
-        time.sleep(1)
-        
+        check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y")
+        logging.info("Reboot command sent, waiting for confirmation...")
+       
         print(f"Huawei device {ip} is now rebooting with the new configuration")
         logging.info(f"Huawei device {ip} is now rebooting with the new configuration")
         
@@ -571,7 +700,8 @@ def perform_huawei_restore(device, config_file):
             shell.close()
             print(f"Closed SSH connection to {ip}")
             logging.info(f"Closed SSH connection to {ip}")
-        except:
+        except Exception as e:
+            logging.error(f"Failed to close SSH connection to {ip}, {str(e)}")
             pass
  
  
