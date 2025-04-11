@@ -1,15 +1,8 @@
-import paramiko
-import time
-import os, sys
-import shutil
+import paramiko, time, os, sys, shutil, requests, logging, argparse, boto3, re, subprocess
 from datetime import datetime
-import requests
 from scp import SCPClient
-import logging
-import argparse
-import boto3
 
- 
+
 def connect_ssh_shell(host, username, password):
     ssh = paramiko.SSHClient()
     ssh.load_system_host_keys()
@@ -25,6 +18,75 @@ def connect_ssh(host, username, password):
     ssh.connect(host, port=22, username=username, password=password, look_for_keys=False, allow_agent=False)
     print(f"SSH connection established to {host}...")
     return ssh
+
+def check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y", ):
+    timeout = timeout
+    start_time = time.time()
+    output = ""
+    try:
+        prompt_counter = 0
+        last_prompt = ""
+        max_prompts = 3  # Maximum number of times to respond to similar prompts
+        
+        while (time.time() - start_time) < timeout:
+            if shell.recv_ready():
+                chunk = shell.recv(65535).decode("utf-8")
+                output += chunk
+                print(chunk, end="")  # For visibility during testing
+                logging.info("Received chunk: " + chunk)
+                
+                # Check for specific confirmation prompts
+                if re.search(r'\[Y/N\]|\(Y/N\)|[Yy]es/[Nn]o|continue\?', chunk) and "configuration will be saved to the configuration file" not in chunk:
+                    logging.info("confirmation prompt detected in: " + chunk)
+                    
+                    # Check if this is the same prompt repeating
+                    if chunk.strip() == last_prompt.strip():
+                        prompt_counter += 1
+                        if prompt_counter >= max_prompts:
+                            logging.warning("Detected possible infinite prompt loop, breaking out")
+                            break
+                    else:
+                        prompt_counter = 0
+                        last_prompt = chunk
+                        
+                    print("Confirmation prompt detected. Sending:", prompt_response)
+                    logging.info("Confirmation prompt detected. Sending: " + prompt_response)
+                    shell.send(prompt_response + '\n')
+                    time.sleep(0.5)  # Small delay to let the response be processed
+
+                elif "configuration will be saved to the configuration file" in chunk:
+                    print("Configuration will be saved to the configuration file. Sending:N" )
+                    logging.info("Configuration will be saved to the configuration file. Sending: N")
+                    shell.send("N\n")
+                    time.sleep(0.5)  # Small delay to let the response be processed
+                # Check for other types of prompts that may require confirmation
+                
+                elif re.search(r'Are you sure|Proceed|Confirm', chunk):
+                    logging.info("Additional confirmation prompt detected in: " + chunk)
+                    
+                    # Check if this is the same prompt repeating
+                    if chunk.strip() == last_prompt.strip():
+                        prompt_counter += 1
+                        if prompt_counter >= max_prompts:
+                            logging.warning("Detected possible infinite prompt loop, breaking out")
+                            break
+                    else:
+                        prompt_counter = 0
+                        last_prompt = chunk
+                        
+                    print("Additional confirmation prompt detected. Sending:", prompt_response)
+                    logging.info("Additional confirmation prompt detected. Sending: " + prompt_response)
+                    shell.send(prompt_response + '\n')
+                    time.sleep(0.5)
+            
+            # Small delay to prevent CPU spinning
+            time.sleep(0.1)
+            
+    except Exception as e:
+        logging.error(f"Error in check_and_bypass_confirmation: {str(e)}")
+        print(f"Error in confirmation handling: {str(e)}")
+    
+    return output
  
 def detect_vendor(shell):
     # Try detecting the vendor using specific commands
@@ -350,7 +412,6 @@ def perform_backup(device, output_dir, local_backup_file):
         logging.error("Failed to execute backup: Vendor is None")
         print("Failed to execute backup: Vendor is  None")
    
-       
 def perform_restore(device):
     ip = device['ip']
     username = device['username']
@@ -362,81 +423,58 @@ def perform_restore(device):
         print(f"Connecting to {ip} to detect vendor...")
         logging.info(f"Connecting to {ip} to detect vendor...")
         shell = connect_ssh_shell(ip, username, password)
+        logging.info(f"Connected to {ip}...")
+        time.sleep(1)
+        shell.recv(1000)
+        shell.send("terminal length 0\n")
+        logging.info(f"Setting terminal length to 0...")
+        shell.send("screen-length 0 temporary\n")
+        logging.info(f"Setting screen length to 0 temporary...")
+        shell.send("set cli screen-length 0\n")
+        logging.info(f"Setting CLI screen length to 0...")
+        time.sleep(1)
+        shell.recv(1000)
         vendor = detect_vendor(shell)
         shell.close()
         time.sleep(5)
         print(f"Detected vendor: {vendor}")
         logging.info(f"Detected vendor: {vendor}")
         logging.info(f"Restoring configuration for device {ip}...")
-        # Step 2: Use SCP to copy the restore file to the device
+        
+        # Special handling for Huawei devices
+        if vendor == "huawei":
+            perform_huawei_restore(device, config_file)
+            return
+            
+        # Step 2: Use SCP to copy the restore file to the device for non-Huawei devices
         print(f"Copying restore file to {ip}...")
         logging.info(f"Copying restore file to {ip}...")
         
+        # Define progress callback function
+        def progress(filename, size, sent):
+            print(f"[*] SCP Progress: {filename}, {sent}/{size} bytes transferred")
+            logging.info(f"[*] SCP Progress: {filename}, {sent}/{size} bytes transferred")  
+ 
         if vendor == "cisco":
             remote_file = "restore.cfg"
         elif vendor == "juniper":
-            remote_file = "restore.cfg"
-        elif vendor == "huawei":
-            remote_file = "flash:/restore.cfg"
+            remote_file = "/var/tmp/restore.cfg"
         else:
             raise Exception(f"Unsupported vendor for SCP: {vendor}")
         
-        logging.info(f"Remote file to copy: {remote_file}")
-        print(f"Uploading {config_file} to {remote_file} on {ip}...")
-        logging.info(f"Uploading {config_file} to {remote_file} on {ip}...")
         scp = None
-         
- 
-
         try:
-            # For non-Huawei devices, use SCP to upload the file
-            if vendor != 'huawei':
-                ssh = connect_ssh(ip, username, password)
-                # Increase SCP timeout and add progress callback
-                def progress(filename, size, sent):
-                    print(f"[*] SCP Progress: {filename}, {sent}/{size} bytes transferred")
-                    logging.info(f"[*] SCP Progress: {filename}, {sent}/{size} bytes transferred") 
-
-                logging.info(f"Creating SCP session for {ip}...")
-                scp = SCPClient(ssh.get_transport(), socket_timeout=100, progress=progress)
-                logging.info(f"SCP session created for {ip}...")
-                scp.put(config_file, remote_file)
-                print(f"File successfully uploaded to {ip}")
-                logging.info(f"File successfully uploaded to {ip}")
-            
-            # For Huawei devices, use SSH to upload the configuration file
-            else:
-                shell = connect_ssh_shell(ip, username, password)
-                time.sleep(5)
-                logging.info(f"Connected to Huawei device for SCP upload...")
-
-                with open(config_file, "r") as f:
-                    config_lines = f.readlines()
-
-                shell.recv(1000)
-                shell.send("system-view\n")
-                shell.recv(1000)
-                logging.info(f"Entering system-view mode on Huawei device...")
-
-                for line in config_lines:
-                    shell.send(line.strip() + "\n")
-                    shell.recv(500)
-
-                logging.info(f"Sending configuration lines to Huawei device...")
-                time.sleep(2)
-                shell.send("commit\n")  # Commit the changes in Huawei's system-view mode
-                shell.recv(1000)
-                # Save the config
-                logging.info(f"Saving configuration on Huawei device...")
-                shell.send("save\n")
-                shell.recv(2000)
-                shell.send("Y\n")  # Confirm the save prompt
-                shell.recv(2000)
-                
-                # Close the shell
-                logging.info(f"Closing SSH connection to Huawei device...")
-                shell.close()
-                ssh.close()
+            ssh = connect_ssh(ip, username, password)
+            logging.info(f"Remote file to copy: {remote_file}")
+            print(f"Uploading {config_file} to {remote_file} on {ip}...")
+            logging.info(f"Uploading {config_file} to {remote_file} on {ip}...")
+            logging.info(f"Creating SCP session for {ip}...")
+            scp = SCPClient(ssh.get_transport(), socket_timeout=100, progress=progress)
+            logging.info(f"SCP session created for {ip}...")
+            scp.put(config_file, remote_file)
+            print(f"File successfully uploaded to {ip}")
+            logging.info(f"File successfully uploaded to {ip}")
+            ssh.close()
 
         except Exception as e:
             print(f"Error during SCP upload to {ip}: {str(e)}")
@@ -451,7 +489,7 @@ def perform_restore(device):
                 except Exception as e:
                     print(f"Failed to close SCP session for {ip}: {str(e)}")
                     logging.error(f"Failed to close SCP session for {ip}: {str(e)}")
-        ssh.close()
+        
         print(f"Restore file copied to {ip}")
         logging.info(f"Restore file copied to {ip}")
         time.sleep(5)
@@ -472,22 +510,60 @@ def perform_restore(device):
             time.sleep(1)
             shell.send("\n")  # Accept default filename
             time.sleep(1)
+
         elif vendor == "juniper":
             print(f"Restoring configuration on Juniper device...")
             logging.info(f"Restoring configuration on Juniper device...")
-            shell.send("configure exclusive\n")
+            shell.send("configure\n")
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output for configuration mode: {output}")
+            
             logging.info(f"Entering exclusive configuration mode...")
-            time.sleep(1)
-            shell.send("load override /var/tmp/restore  .cfg\n")
+            time.sleep(3)
+            shell.send("load override /var/tmp/restore.cfg\n")
+
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output for configuration mode: {output}")
             logging.info(f"Loading configuration from restore.cfg...")
-            time.sleep(1)
-            shell.send("commit and-quit\n")
-            logging.info(f"Committing configuration and quitting...")
-            time.sleep(1)
- 
+            time.sleep(6)
+
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output for configuration mode: {output}")
+            
+            shell.send("commit\n")
+            # Wait for commit to complete
+            logging.info(f"Committing configuration...")
+            time.sleep(3)  # Initial delay
+
+            # Wait for commit response
+            start_time = time.time()
+            timeout = 60
+            commit_complete = False
+
+            while time.time() - start_time < timeout and not commit_complete:
+                if shell.recv_ready():
+                    output = shell.recv(65535).decode("utf-8")
+                    logging.info(f"Commit output: {output}")
+                    
+                    # Check for completion indicators
+                    if "commit complete" in output.lower() or "configuration committed" in output.lower():
+                        commit_complete = True
+                        logging.info("Commit completed successfully")
+                    elif "error" in output.lower() or "failed" in output.lower():
+                        logging.error(f"Commit error: {output}")
+                        raise Exception(f"Configuration commit failed: {output}")
+                time.sleep(1)
+
+            if not commit_complete:
+                logging.warning("Commit operation timed out")
+            
+            
+            shell.send("exit\n")
+            output = shell.recv(65535).decode("utf-8")
+            logging.info(f"Received output for exiting configuration mode: {output}")
+            time.sleep(2)
         print(f"Restore configuration applied on {ip}")
         logging.info(f"Restore configuration applied on {ip}")
-        
  
     except Exception as e:
         print(f"Restore failed on {ip}: {str(e)}")
@@ -500,8 +576,127 @@ def perform_restore(device):
         except Exception as e:
             print(f"Failed to close SSH connection to {ip}")
             logging.error(f"Failed to close SSH connection to {ip}, {str(e)}")
- 
-  
+
+
+def perform_huawei_restore(device, config_file):
+    """Separate function for Huawei device restore using command line FTP"""
+    
+    ip = device['ip']
+    username = device['username']
+    password = device['password']
+    
+    config_filename = os.path.basename(config_file)
+    print(f"Restoring configuration on Huawei device {ip} using FTP...")
+    logging.info(f"Restoring configuration on Huawei device {ip} using FTP...")
+    
+    # Step 1: Upload the config file using command line FTP
+    try:
+        
+        print(f"Starting FTP process to upload configuration file {config_filename}...")
+        logging.info(f"Starting FTP process to upload configuration file {config_filename}...")
+        # Start FTP process with direct IP connection
+        ftp_process = subprocess.Popen(['ftp', ip],
+                                      stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE,
+                                      universal_newlines=True)
+
+        # Wait for username prompt and send username
+        time.sleep(2)  # Give time for connection and prompt
+        ftp_process.stdin.write(f"{username}\n")
+        ftp_process.stdin.flush()
+        logging.info(f"Sent username: {username}")
+
+        # Wait for password prompt and send password
+        time.sleep(1)
+        ftp_process.stdin.write(f"{password}\n")
+        ftp_process.stdin.flush()
+        logging.info("Sent password")
+
+        # Wait for login to complete
+        time.sleep(2)
+
+        # Send binary mode command
+        ftp_process.stdin.write("binary\n")
+        ftp_process.stdin.flush()
+        logging.info("Set binary transfer mode")
+        time.sleep(1)
+
+        # Send put command to upload file
+        ftp_process.stdin.write(f"put {config_file} {config_filename}\n")
+        ftp_process.stdin.flush()
+        logging.info(f"Uploading file {config_file} as {config_filename}")
+        time.sleep(3)  # Give more time for file upload
+
+        # Exit FTP session
+        ftp_process.stdin.write("quit\n")
+        ftp_process.stdin.flush()
+        logging.info("Sent quit command to close FTP session")
+        
+        # Close stdin to signal we're done sending commands
+        ftp_process.stdin.close()
+        
+        # Wait for process to complete and get output
+        stdout, stderr = ftp_process.communicate()
+        
+        # Check if successful
+        if ftp_process.returncode != 0:
+            print(f"FTP stdout: {stdout}")
+            print(f"FTP stderr: {stderr}")
+            raise Exception(f"FTP process failed with return code {ftp_process.returncode}")
+        
+        print(f"File {config_filename} successfully uploaded via FTP")
+        logging.info(f"File {config_filename} successfully uploaded via FTP")
+        
+    except Exception as e:
+        print(f"FTP upload failed on {ip}: {str(e)}")
+        logging.error(f"FTP upload failed on {ip}: {str(e)}")
+        raise
+    
+    # Step 2: SSH to set startup configuration and reboot
+    try:
+        shell = connect_ssh_shell(ip, username, password)
+        print(f"Setting startup configuration and rebooting...")
+        logging.info(f"Setting startup configuration and rebooting...")
+        logging.info("Bypassing password change prompt, sending 'N' to bypass if any found...")
+        
+        time.sleep(1)
+        # check_and_bypass_confirmation(shell, timeout=5, prompt_response="N")
+        shell.send("N\n")
+        
+        time.sleep(1)
+        output = shell.recv(65535).decode("utf-8")
+        logging.info(f"Response after bypassing password prompt: {output}")
+        
+        # Set the uploaded file as startup configuration
+        shell.send(f"startup saved-configuration {config_filename}\n")
+        logging.info(f"Setting {config_filename} as startup configuration...")
+        # Wait to receive command prompt or confirmation request
+        time.sleep(2)
+        output = shell.recv(65535).decode("utf-8")
+        logging.info(f"Response after setting startup configuration: {output}")
+        check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y")
+       
+        logging.info("Sending reboot command...")
+         # Reboot the device
+        shell.send("reboot\n")
+        time.sleep(1)
+        check_and_bypass_confirmation(shell, timeout=15, prompt_response="Y")
+        logging.info("Reboot command sent, waiting for confirmation...")
+       
+        print(f"Huawei device {ip} is now rebooting with the new configuration")
+        logging.info(f"Huawei device {ip} is now rebooting with the new configuration")
+        
+    except Exception as e:
+        print(f"Setting startup configuration failed on {ip}: {str(e)}")
+        logging.error(f"Setting startup configuration failed on {ip}: {str(e)}")
+    finally:
+        try:
+            shell.close()
+            print(f"Closed SSH connection to {ip}")
+            logging.info(f"Closed SSH connection to {ip}")
+        except:
+            pass
  
 def main():
     # Setting up logging to file with timestamp
